@@ -3,7 +3,7 @@ package com.excel.core.type;
 /**
  * The enum To work cell type.
  */
-public enum ToWorkCellType {
+public enum CstWorkCellType {
 
     /**
      * Title to work cell type.

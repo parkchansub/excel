@@ -1,17 +1,367 @@
 package com.excel.core;
 
-import org.apache.poi.ss.usermodel.Cell;
+import com.excel.annotation.ExcelHeader;
+import com.excel.core.converter.ExcelHeaderConverter;
+import com.excel.core.converter.ExcelHeaderDefatulConverter;
+import com.excel.core.model.CellPosition;
+import com.excel.core.model.ToTitleKey;
+import com.excel.core.type.CstWorkCellType;
+import com.excel.core.type.SheetDirection;
+import com.excel.exception.SheetNotFoundException;
+import com.excel.util.ExcelHeaderHelper;
+import com.excel.util.ModelMapperGenerator;
+import com.excel.util.TitleRowHelper;
+import lombok.Getter;
+import lombok.NonNull;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
 
-public class CstWorkSheet {
+import java.lang.reflect.Field;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+public class CstWorkSheet implements ExcelHeaderHelper, TitleRowHelper {
 
 
     private final static int DEFAULT_WIDTH_SIZE = 2560;
-    private final Cell cell;
 
-    public CstWorkSheet(Cell cell) {
-        this.cell = cell;
+    @Getter
+    private final String name;
 
+
+    private final Workbook _wb;
+    private final CellPosition cellPosition;
+
+    private ExcelHeaderConverter __excelHeaderConverter = new ExcelHeaderDefatulConverter();
+
+    private Sheet _sheet;
+
+    public CstWorkSheet(@NonNull Workbook wb) {
+        this(wb, null);
+    }
+
+    public CstWorkSheet(Workbook _wb, String name) {
+        this._wb = _wb;
+
+        if (name != null && !name.isEmpty()) {
+            this.name = name;
+            this._sheet = this._wb.createSheet(name);
+        } else {
+            this._sheet = this._wb.createSheet();
+            this.name = this._sheet.getSheetName();
+        }
+
+        this.cellPosition = new CellPosition(_sheet);
+    }
+
+    /**
+     * Instantiates a new To work sheet.
+     *
+     * @param _sheet     the sheet
+     */
+    public CstWorkSheet(@NonNull Sheet _sheet) {
+        this._wb = _sheet.getWorkbook();
+        this._sheet = _sheet;
+        this.name = _sheet.getSheetName();
+        this.cellPosition = new CellPosition(_sheet);
+    }
+
+    /**
+     * Create title cell list.
+     *
+     * @param width  the width
+     * @param values the values
+     * @return the list
+     */
+    public List<CstWorkCell> createTitleCell(int width, String... values) {
+        if (values == null || values.length < 1) {
+            return new ArrayList<>();
+        }
+
+        List<CstWorkCell> cells = new ArrayList<>();
+
+        for (String value : values) {
+            Cell pcell = this.cellPosition.nextCell();
+            _sheet.setColumnWidth(pcell.getColumnIndex(), DEFAULT_WIDTH_SIZE * width);
+            cells.add(new CstWorkCell(pcell, value, CstWorkCellType.TITLE));
+        }
+        return cells;
+    }
+
+    /**
+     * Create cell to newline list.
+     *
+     * @param values the values
+     * @return the list
+     */
+    public List<CstWorkCell> createCellToNewline(Object... values) {
+        this.newLine();
+        return createCell(values);
     }
 
 
+    /**
+     * Create cell list.
+     *
+     * @param values the values
+     * @return the list
+     */
+    public List<CstWorkCell> createCell(Object... values) {
+        if (values == null || values.length < 1) {
+            return new ArrayList<>();
+        }
+        return Arrays.stream(values).map(v -> new CstWorkCell(cellPosition.nextCell(), v)).collect(Collectors.toList());
+    }
+
+    /**
+     * New line.
+     */
+    public void newLine() {
+        this.cellPosition.newLine();
+    }
+
+    /**
+     * Map list.
+     *
+     * @param <T>  the type parameter
+     * @param type the type
+     * @return the list
+     */
+    public <T> List<T> map(Class<T> type) {
+        return map(type, null);
+    }
+
+    public <T> List<T> map(Class<T> type, Integer maxRowCnt) {
+        Row titleRow = findTitleRow(type, this._sheet, this.__excelHeaderConverter);
+
+        Map<Integer, String> excelTitleMap = new HashMap<>();
+        for (int i = 0; i < titleRow.getLastCellNum(); i++) {
+            excelTitleMap.put(i, titleRow.getCell(i) != null ? titleRow.getCell(i).getStringCellValue() : "");
+        }
+
+        List<String> existTitles = IntStream.range(0, titleRow.getLastCellNum()).mapToObj(titleRow::getCell)
+                .filter(Objects::nonNull)
+                .map(Cell::getStringCellValue).collect(Collectors.toList());
+
+        List<Field> fields = getDeclaredFields(type);
+        Set<ToTitleKey> keyset = new HashSet<>();
+        for (Field field : fields) {
+            if (field.getAnnotation(ExcelHeader.class) != null) {
+                keyset.add(new ToTitleKey(field, existTitles, __excelHeaderConverter));
+            }
+        }
+
+        List<Map<String, Object>> proxyMapList = IntStream.range(titleRow.getRowNum() + 1, getLastDataRowNum(titleRow, maxRowCnt))
+                .mapToObj(this._sheet::getRow).map(row -> rowToMap(row, excelTitleMap, keyset)).collect(Collectors.toList());
+
+        return proxyMapList.stream().filter(map -> !isEmptyValueMap(map))
+                .map(map -> ModelMapperGenerator.enableFieldModelMapper().map(map, type)).collect(Collectors.toList());
+    }
+    private boolean isEmptyValueMap(Map<String, Object> map){
+        if( map == null || map.isEmpty()){
+            return true;
+        }
+        for (Map.Entry<String, Object> entry: map.entrySet()) {
+            if( entry.getValue() == null){ continue; }
+            if(!String.valueOf(entry.getValue()).trim().isEmpty()){
+                return false;
+            }
+
+        }
+        return true;
+    }
+
+    private int getLastDataRowNum(Row titleRow, Integer maxRowCnt) {
+        if (maxRowCnt == null) {
+            return this._sheet.getLastRowNum() + 1;
+        }
+        int firstDataRow = titleRow.getRowNum() + 1;
+        return firstDataRow + maxRowCnt;
+    }
+
+    private List<Field> getDeclaredFields(Class type) {
+        List<Field> fields = Arrays.stream(type.getDeclaredFields()).collect(Collectors.toList());
+        if (type.getSuperclass() != null && !type.getSuperclass().equals(Object.class)) {
+            fields.addAll(getDeclaredFields(type.getSuperclass()));
+        }
+        return fields;
+    }
+
+    /**
+     * Update direction to work sheet.
+     *
+     * @param sheetDirection the sheet direction
+     * @return the to work sheet
+     */
+    public CstWorkSheet updateDirection(SheetDirection sheetDirection) {
+        this.cellPosition.updateDirection(sheetDirection);
+        return this;
+    }
+
+    /**
+     * Skip list.
+     *
+     * @param cnt the cnt
+     * @return the list
+     */
+    public List<CstWorkCell> skip(int cnt) {
+        List<Cell> cells = this.cellPosition.skip(cnt);
+        return cells.stream().map(v -> new CstWorkCell( v, null)).collect(Collectors.toList());
+    }
+
+    /**
+     * Merge.
+     *
+     * @param width  the width
+     * @param height the height
+     */
+    public void merge(int width, int height) {
+        this.cellPosition.merge(width, height);
+    }
+
+    public void writeTitle(String title, int width){
+        createCell( title);
+        merge(width, 1);
+        newLine();
+    }
+    /**
+     * From.
+     *
+     * @param list the list
+     */
+    public void from( List list) {
+        from(null, list);
+    }
+    /**
+     * From.
+     *
+     * @param title the title
+     * @param list the list
+     */
+    public void from(String title, List list) {
+        if (list == null || list.isEmpty()) {
+            throw new SheetNotFoundException("Not found sheet list");
+        }
+
+        this.clear();
+
+        Object obj = list.get(0);
+        List<Field> fields = getDeclaredFields(obj.getClass());
+        AtomicInteger fieldCount = new AtomicInteger();
+        List<ToTitleKey> keys = fields.stream().filter(field -> field.getAnnotation(ExcelHeader.class) != null)
+                .map(field -> new ToTitleKey(field, fieldCount.getAndIncrement(), __excelHeaderConverter))
+                .sorted().collect(Collectors.toList());
+        if( title != null){
+            writeTitle(title, keys.size());
+        }
+        keys.forEach(key -> this.createTitleCell(1, key.getViewName()));
+        for (Object o : list) {
+            writeObject(o, keys);
+        }
+    }
+
+    /**
+     * Gets cell.
+     *
+     * @param rowIdx  the row idx
+     * @param cellIdx the cell idx
+     * @return the cell
+     */
+    public Cell getCell(@NonNull int rowIdx, @NonNull int cellIdx) {
+        return this.cellPosition.getCell(rowIdx, cellIdx);
+    }
+
+    /**
+     * Gets merged regions.
+     *
+     * @return the merged regions
+     */
+    public List<CellRangeAddress> getMergedRegions() {
+        if (this._sheet.getNumMergedRegions() < 1) {
+            return new ArrayList<>();
+        }
+
+        return IntStream.range(0, this._sheet.getNumMergedRegions()).mapToObj(i -> this._sheet.getMergedRegion(i)).collect(Collectors.toList());
+    }
+
+    /**
+     * Gets row count.
+     *
+     * @return the row count
+     */
+    public int getRowCount() {
+        if (this._sheet.getLastRowNum() == 0 && this._sheet.getRow(0) == null) {
+            return 0;
+        }
+        return this._sheet.getLastRowNum() + 1;
+    }
+
+    private void writeObject(Object obj, List<ToTitleKey> keys) {
+        this.newLine();
+        keys.forEach(key -> {
+            Object value = "";
+            try {
+                key.getField().setAccessible(true);
+                value = key.getField().get(obj);
+            } catch (IllegalAccessException e) {
+                //TODO
+            }
+            this.createCell(value);
+        });
+    }
+
+    private void clear() {
+
+        for (int i = 0; i < this._sheet.getLastRowNum(); i++) {
+            this._sheet.removeRow(this._sheet.getRow(i));
+        }
+        this.cellPosition.clear();
+    }
+
+    private Map<String, Object> rowToMap(Row row, Map<Integer, String> titleMaps, Set<ToTitleKey> setKeys) {
+
+        Map<String, Object> valueMap = new HashMap<>();
+        for (int i = 0; i < row.getLastCellNum(); i++) {
+            Object value = getCellValue(row.getCell(i));
+            String title = titleMaps.get(i);
+            if (title == null) {
+                break;
+            }
+            ToTitleKey toTitleKey = setKeys.stream().filter(key -> key.isMyName(title)).findFirst().orElse(null);
+            if (toTitleKey == null) {
+                continue;
+            }
+
+            valueMap.put(toTitleKey.getKey(), value);
+        }
+        return valueMap;
+    }
+
+    private Object getCellValue(Cell cell) {
+        if (cell == null) {
+            return "";
+        }
+        switch (cell.getCellType()) {
+            case NUMERIC:
+                return cell.getNumericCellValue();
+            case BOOLEAN:
+                return cell.getBooleanCellValue();
+            case FORMULA:
+                return cell.getCachedFormulaResultType();
+
+            case BLANK:
+            case ERROR:
+                return "";
+
+            case STRING:
+            default:
+                return cell.getStringCellValue();
+        }
+    }
+
+    private Row getLastRow() {
+        return this._sheet.getRow(this._sheet.getLastRowNum());
+    }
 }

@@ -1,6 +1,6 @@
 package com.excel.core.type;
 
-import com.github.ckpoint.toexcel.exception.NotFoundExtException;
+import com.excel.exception.NotFoundExtException;
 import lombok.NonNull;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -14,7 +14,7 @@ import java.util.Arrays;
 /**
  * The enum Work book type.
  */
-public enum ToWorkBookType {
+public enum CstWorkBookType {
 
     /**
      * Hssf work book type.
@@ -27,7 +27,7 @@ public enum ToWorkBookType {
 
     private final String ext;
 
-    ToWorkBookType(String ext) {
+    CstWorkBookType(String ext) {
         this.ext = ext;
     }
 
@@ -38,8 +38,14 @@ public enum ToWorkBookType {
      */
     public Workbook createWorkBookInstance() {
         if (this.equals(HSSF)) {
+            /**
+             *  excel 97 ~ 2003
+             */
             return new HSSFWorkbook();
         }
+        /**
+         *  excel 2007 이상
+         */
         return new XSSFWorkbook();
 
     }
@@ -50,8 +56,8 @@ public enum ToWorkBookType {
      * @param ext the ext
      * @return the work book type
      */
-    public static ToWorkBookType findWorkBookType(@NonNull String ext) {
-        return Arrays.stream(ToWorkBookType.values()).filter(type -> ext.endsWith(type.ext)).findFirst()
+    public static CstWorkBookType findWorkBookType(@NonNull String ext) {
+        return Arrays.stream(CstWorkBookType.values()).filter(type -> ext.endsWith(type.ext)).findFirst()
                 .orElseThrow(() -> new NotFoundExtException(ext + " is not supported"));
     }
 
